@@ -26,7 +26,8 @@ enum class PoolMode {
 // Class Thread
 class Thread {
 public:
-
+    // 启动线程
+    void start();
 private:
 
 };
@@ -38,7 +39,7 @@ public:
     ~ThreadPool();
 
     // 开启线程池
-    void start(); 
+    void start(size_t initThreadSize = 4); 
 
     // 设置线程池的工作模式
     void setMode(PoolMode mode);
