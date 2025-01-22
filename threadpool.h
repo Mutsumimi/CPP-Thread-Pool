@@ -7,6 +7,7 @@
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
+#include <functional>
 
 // 任务的抽象基类
 class Task {
@@ -26,10 +27,16 @@ enum class PoolMode {
 // Class Thread
 class Thread {
 public:
+    using ThreadFunc = std::function<void()>;
+
+    Thread(ThreadFunc func);
+    ~Thread();
+
     // 启动线程
     void start();
 private:
 
+    ThreadFunc func_;
 };
 
 // Class ThreadPool
@@ -56,7 +63,7 @@ public:
 private:
     PoolMode poolMode_;  // 线程池工作模式 
 
-    std::vector<Thread*> threads_;  // 线程列表
+    std::vector<std::unique_ptr<Thread>> threads_;  // 线程列表
     size_t initThreadSize_;  // 初始线程数量
 
     std::queue<std::shared_ptr<Task>> taskQue_;  // 任务队列
@@ -66,6 +73,8 @@ private:
     std::mutex taskQueMutex_;  // 保证任务队列的线程安全
     std::condition_variable notFull_;
     std::condition_variable notEmpty_;
+
+    void threadFuc();
 };
 
 #endif
