@@ -6,18 +6,36 @@
 const size_t TASK_QUE_THRESHOLD = 4;
 
 /*
+任务类方法实现
+*/
+Task::Task()
+    : res_(nullptr) {
+}
+
+void Task::setResult(Result* res) {
+    res_ = res;
+}
+
+void Task::exec() {
+    if (res_ != nullptr) {
+        res_->setVal(run());
+    }
+}
+
+
+/*
 线程池类方法实现
 */
 
 ThreadPool::ThreadPool()   
-    : initThreadSize_(0)
-    , taskSize_(0)
-    , taskQueThreshold_(TASK_QUE_THRESHOLD)
-    , poolMode_(PoolMode::Mode_Fixed)
-{}
+    : initThreadSize_(0), 
+      taskSize_(0), 
+      taskQueThreshold_(TASK_QUE_THRESHOLD), 
+      poolMode_(PoolMode::Mode_Fixed) {
+}
 
-ThreadPool::~ThreadPool()
-{}
+ThreadPool::~ThreadPool() {
+}
 
 // 开启线程池
 void ThreadPool::start(size_t initThreadSize) {
@@ -45,14 +63,14 @@ void ThreadPool::setTaskQueThreshold(size_t threshold) {
 }
 
 // 提交任务至线程池    用户调用该接口向任务队列中添加任务
-void ThreadPool::submitTask(std::shared_ptr<Task> sp) {
+Result ThreadPool::submitTask(std::shared_ptr<Task> sp) {
     // 获取锁
     std::unique_lock<std::mutex> lock(taskQueMutex_);
 
     // 线程通信 等待任务队列空余
     if (!notFull_.wait_for(lock, std::chrono::seconds(1), [&]()->bool { return taskQue_.size() < taskQueThreshold_; })) {
         std::cerr << "Task queue is full, submit task fail." << std::endl;
-        return ;
+        return Result(std::move(sp), false);
     }
 
     // 任务队列空余，将任务加入队列
@@ -60,6 +78,7 @@ void ThreadPool::submitTask(std::shared_ptr<Task> sp) {
     taskSize_++;
 
     notEmpty_.notify_all(); 
+    return Result(std::move(sp));
 }
 
 // 定义线程函数    线程池的所有线程从任务队列中获取任务并执行
@@ -92,24 +111,48 @@ void ThreadPool::threadFuc() {
 
         // 当前线程执行该任务
         if (task != nullptr) {
-            task->run();
+            task->exec();
         }
     }
 }
+
 
 /*
 线程类方法实现
 */
 
 Thread::Thread(ThreadFunc func) 
-    : func_(func)
-{}
+    : func_(func) {
+}
 
-Thread::~Thread()
-{}
+Thread::~Thread() {    
+}
 
 // 启动线程
 void Thread::start() {
     std::thread t(func_);
     t.detach();
+}
+
+
+/*
+Result类方法实现
+*/
+Result::Result(std::shared_ptr<Task> task, bool isValid)
+    : task_(task), 
+      isValid_(isValid) {
+      task_->setResult(this);
+}
+
+Any Result::get() {
+    if (!isValid_) {
+        return NULL;
+    }
+    sem_.wait();
+    return std::move(any_);
+}
+
+void Result::setVal(Any any) {
+    this->any_ = std::move(any);
+    sem_.post();
 }
