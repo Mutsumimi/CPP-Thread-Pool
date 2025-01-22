@@ -3,7 +3,7 @@
 #include <thread>
 #include <iostream>
 
-const size_t TASK_QUE_THRESHOLD = 1024;
+const size_t TASK_QUE_THRESHOLD = 4;
 
 /*
 线程池类方法实现
@@ -50,7 +50,7 @@ void ThreadPool::submitTask(std::shared_ptr<Task> sp) {
     std::unique_lock<std::mutex> lock(taskQueMutex_);
 
     // 线程通信 等待任务队列空余
-    if (notFull_.wait_for(lock, std::chrono::seconds(1), [&]()->bool { return taskQue_.size() < taskQueThreshold_; })) {
+    if (!notFull_.wait_for(lock, std::chrono::seconds(1), [&]()->bool { return taskQue_.size() < taskQueThreshold_; })) {
         std::cerr << "Task queue is full, submit task fail." << std::endl;
         return ;
     }
@@ -71,8 +71,12 @@ void ThreadPool::threadFuc() {
             // 获取锁
             std::unique_lock<std::mutex> lock(taskQueMutex_);
 
+            std::cout << "thread id: " << std::this_thread::get_id() << " try to acquire task..." << std::endl;
+
             // 等待notEmpty条件
             notEmpty_.wait(lock, [&]()->bool { return taskQue_.size() > 0; });
+
+            std::cout << "thread id: " << std::this_thread::get_id() << " acquire task successfully..." << std::endl;
 
             // 从任务队列中获取任务
             task = taskQue_.front();

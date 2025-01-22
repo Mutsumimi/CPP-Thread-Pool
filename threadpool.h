@@ -9,41 +9,79 @@
 #include <condition_variable>
 #include <functional>
 
+// Any类型 可以接受任意的数据类型
+class Any {
+public:
+    Any() = default;
+    ~Any() = default;
+    Any(Any&&) = default;
+    Any& operator=(Any&&) = default;
+    Any(const Any&) = delete;
+    Any& operator=(const Any&) = delete;
+
+    template<typename T>
+    Any(T data) : base_(std::make_unique<Drive<T>>(data)) {}
+
+private:
+    // 基类类型
+    class Base {
+    public:
+        virtual ~Base() = default;
+    private:
+
+    };
+
+    // 派生类类型
+    template<typename T>
+    class Drive : public Base {
+    public:
+        Drive(T, data) : data_(data) {}
+    private:
+        T data_;
+    };
+
+    std::unique_ptr<Base> base_;  // 基类指针
+};
+
+
 // 任务的抽象基类
 class Task {
 public:
     // 用户可以自定义任务类型，从Task类继承而来，重写run()方法 
-    virtual void run() = 0;
+    virtual Any run() = 0;
 private:
 
 };
 
-// 线程池的类型
-enum class PoolMode {
-    Mode_Fixed,
-    Mode_Cached,
-};
 
-// Class Thread
+// 线程类型
 class Thread {
 public:
     using ThreadFunc = std::function<void()>;
 
     Thread(ThreadFunc func);
-    ~Thread();
+    ~Thread() = default;
 
     // 启动线程
     void start();
-private:
 
+private:
     ThreadFunc func_;
 };
 
-// Class ThreadPool
+
+// 线程池工作模式
+enum class PoolMode {
+    Mode_Fixed,
+    Mode_Cached,
+};
+
+
+// 线程池类型
 class ThreadPool {
 public:
-    ThreadPool();
-    ~ThreadPool();
+    ThreadPool() = default;
+    ~ThreadPool() = default;
 
     // 开启线程池
     void start(size_t initThreadSize = 4); 
