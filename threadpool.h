@@ -8,6 +8,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <functional>
+#include <unordered_map>
 
 // Any类型 可以接受任意的数据类型
 class Any {
@@ -151,7 +152,7 @@ private:
 // 线程类型
 class Thread {
 public:
-    using ThreadFunc = std::function<void()>;
+    using ThreadFunc = std::function<void(int)>;
 
     Thread(ThreadFunc func);
     ~Thread();
@@ -159,8 +160,13 @@ public:
     // 启动线程
     void start();
 
+    // 查询线程id
+    int getId() const;
+
 private:
     ThreadFunc func_;
+    static int genId_;
+    int threadId_;
 };
 
 
@@ -183,8 +189,11 @@ public:
     // 设置线程池的工作模式
     void setMode(PoolMode mode);
 
+    // 设置线程数量上限(Cached模式下)
+    void setThreadSizeThreshold(size_t thread_Threshold);
+
     // 设置线程池的任务队列容量上限
-    void setTaskQueThreshold(size_t threshold);
+    void setTaskQueThreshold(size_t task_Threshold);
 
     // 提交任务至线程池
     Result submitTask(std::shared_ptr<Task> sp);
@@ -194,9 +203,13 @@ public:
 
 private:
     PoolMode poolMode_;  // 线程池工作模式 
+    std::atomic_bool isRunning_;  // 线程池是否已经启动
 
-    std::vector<std::unique_ptr<Thread>> threads_;  // 线程列表
+    std::unordered_map<int, std::unique_ptr<Thread>> threads_;  // 线程列表
     size_t initThreadSize_;  // 初始线程数量
+    size_t threadSizeThreshold_;  // 线程数量上限(Cached模式下)
+    std::atomic_int idleThreadSize_;  // 空闲线程数量
+    std::atomic_int curThreadSize_;  // 当前线程数量
 
     std::queue<std::shared_ptr<Task>> taskQue_;  // 任务队列
     std::atomic_uint taskSize_;  // 任务数量
@@ -206,7 +219,8 @@ private:
     std::condition_variable notFull_;
     std::condition_variable notEmpty_;
 
-    void threadFuc();
+    void threadFuc(int thread_id);  // 线程执行函数
+    bool checkState() const;  // 查询线程池运行状态
 };
 
 #endif

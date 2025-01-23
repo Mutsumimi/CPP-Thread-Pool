@@ -3,7 +3,9 @@
 #include <thread>
 #include <iostream>
 
-const size_t TASK_QUE_THRESHOLD = 4;
+const size_t TASK_QUE_THRESHOLD = 1024;
+const size_t THREAD_SIZE_THRESHOLD = 100;
+const int THREAD_MAX_IDEL_TIME = 60;
 
 /*
 任务类方法实现
@@ -29,37 +31,67 @@ void Task::exec() {
 
 ThreadPool::ThreadPool()   
     : initThreadSize_(0), 
+      idleThreadSize_(0),
+      curThreadSize_(0),
+      threadSizeThreshold_(THREAD_SIZE_THRESHOLD),
       taskSize_(0), 
       taskQueThreshold_(TASK_QUE_THRESHOLD), 
-      poolMode_(PoolMode::Mode_Fixed) {
+      poolMode_(PoolMode::Mode_Fixed),
+      isRunning_(false) {
 }
 
 ThreadPool::~ThreadPool() {
+    isRunning_ = false;
 }
 
 // 开启线程池
 void ThreadPool::start(size_t initThreadSize) {
+    // 设置线程池运行状态
+    isRunning_ = true;
+
     // 初始化线程数量
     initThreadSize_ = initThreadSize;
+    curThreadSize_ = initThreadSize;
+
     // 创建线程对象
     for (int i = 0; i < initThreadSize_; i++) {
-        auto ptr = std::make_unique<Thread>(std::bind(&ThreadPool::threadFuc, this));
-        threads_.emplace_back(std::move(ptr));
+        auto ptr = std::make_unique<Thread>(std::bind(&ThreadPool::threadFuc, this, std::placeholders::_1));
+        int thread_id = ptr->getId();
+        threads_.emplace(thread_id, std::move(ptr));
     }
     // 启动所有线程
     for (int i = 0; i < initThreadSize_; i++) {
         threads_[i]->start();
+        idleThreadSize_++;
+    }
+}
+
+// 设置线程池的线程上线(Cached模式下)
+void ThreadPool::setThreadSizeThreshold(size_t thread_threshold) {
+    if (checkState()) {
+        return ;
+    }
+    if (poolMode_ == PoolMode::Mode_Cached) {
+        threadSizeThreshold_ = thread_threshold;
     }
 }
 
 // 设置线程池的工作模式
 void ThreadPool::setMode(PoolMode mode) {
+    if (checkState()) {
+        return ;
+    } 
     poolMode_ = mode; 
 }
 
+// 查询线程池工作状态
+bool ThreadPool::checkState() const {
+    return isRunning_;
+}
+
 // 设置线程池的任务队列容量上限
-void ThreadPool::setTaskQueThreshold(size_t threshold) {
-    taskQueThreshold_ = threshold;
+void ThreadPool::setTaskQueThreshold(size_t task_threshold) {
+    taskQueThreshold_ = task_threshold;
 }
 
 // 提交任务至线程池    用户调用该接口向任务队列中添加任务
@@ -78,11 +110,25 @@ Result ThreadPool::submitTask(std::shared_ptr<Task> sp) {
     taskSize_++;
 
     notEmpty_.notify_all(); 
+
+    // Cached模式下，根据任务数量和空闲线程数量判断是否需要创建新线程
+    if (poolMode_ == PoolMode::Mode_Cached && taskSize_ > idleThreadSize_ && curThreadSize_ < threadSizeThreshold_) {
+        auto ptr = std::make_unique<Thread>(std::bind(&ThreadPool::threadFuc, this, std::placeholders::_1));
+        std::cout << "Create new thread, id = " << ptr->getId() << "..." << std::endl;
+        int thread_id = ptr->getId();
+        threads_.emplace(thread_id, std::move(ptr));
+        threads_[thread_id]->start();
+        curThreadSize_++;
+        idleThreadSize_++;
+    }
+
     return Result(std::move(sp));
 }
 
-// 定义线程函数    线程池的所有线程从任务队列中获取任务并执行
-void ThreadPool::threadFuc() {
+// 定义线程函数  线程池的所有线程从任务队列中获取任务并执行
+void ThreadPool::threadFuc(int thread_id) {
+    auto lastTime = std::chrono::high_resolution_clock().now();
+
     for (;;) {
         std::shared_ptr<Task> task;
         // 建立作用域限制线程获取锁的时间
@@ -92,10 +138,28 @@ void ThreadPool::threadFuc() {
 
             std::cout << "thread id: " << std::this_thread::get_id() << " try to acquire task..." << std::endl;
 
-            // 等待notEmpty条件
-            notEmpty_.wait(lock, [&]()->bool { return taskQue_.size() > 0; });
+            // Cached模式下，回收超过空闲时间的多余线程
+            if (poolMode_ == PoolMode::Mode_Cached) {
+                while (taskQue_.size() == 0) {
+                    if (std::cv_status::timeout == notEmpty_.wait_for(lock, std::chrono::seconds(1))) {
+                        auto nowTime = std::chrono::high_resolution_clock().now();
+                        auto durTime = std::chrono::duration_cast<std::chrono::seconds>(nowTime - lastTime);
+                        if (durTime.count() > THREAD_MAX_IDEL_TIME && curThreadSize_ > initThreadSize_) {
+                            threads_.erase(thread_id);
+                            std::cout << "Thread id: " << std::this_thread::get_id() << "exit..." << std::endl; 
+                            curThreadSize_--;
+                            idleThreadSize_--;
+                            return ;
+                        }
+                    }
+                }
+            } else {
+                // 等待notEmpty条件
+                notEmpty_.wait(lock, [&]()->bool { return taskQue_.size() > 0; });
+            }
 
             std::cout << "thread id: " << std::this_thread::get_id() << " acquire task successfully..." << std::endl;
+            idleThreadSize_--;
 
             // 从任务队列中获取任务
             task = taskQue_.front();
@@ -113,6 +177,9 @@ void ThreadPool::threadFuc() {
         if (task != nullptr) {
             task->exec();
         }
+
+        idleThreadSize_++;
+        auto lastTime = std::chrono::high_resolution_clock().now();
     }
 }
 
@@ -120,9 +187,11 @@ void ThreadPool::threadFuc() {
 /*
 线程类方法实现
 */
+int Thread::genId_ = 0;
 
 Thread::Thread(ThreadFunc func) 
-    : func_(func) {
+    : func_(func),
+      threadId_(genId_++) {
 }
 
 Thread::~Thread() {    
@@ -130,10 +199,14 @@ Thread::~Thread() {
 
 // 启动线程
 void Thread::start() {
-    std::thread t(func_);
+    std::thread t(func_, threadId_);
     t.detach();
 }
 
+// 查询线程id
+int Thread::getId() const {
+    return threadId_;
+}
 
 /*
 Result类方法实现
