@@ -5,7 +5,7 @@
 
 const size_t TASK_QUE_THRESHOLD = 1024;
 const size_t THREAD_SIZE_THRESHOLD = 100;
-const int THREAD_MAX_IDEL_TIME = 60;
+const int THREAD_MAX_IDEL_TIME = 10;
 
 /*
 任务类方法实现
@@ -42,6 +42,10 @@ ThreadPool::ThreadPool()
 
 ThreadPool::~ThreadPool() {
     isRunning_ = false;
+    
+    std::unique_lock<std::mutex> lock(taskQueMutex_);
+    notEmpty_.notify_all();
+    exitCond_.wait(lock, [&]()->bool { return threads_.size() == 0; });
 }
 
 // 开启线程池
@@ -114,7 +118,7 @@ Result ThreadPool::submitTask(std::shared_ptr<Task> sp) {
     // Cached模式下，根据任务数量和空闲线程数量判断是否需要创建新线程
     if (poolMode_ == PoolMode::Mode_Cached && taskSize_ > idleThreadSize_ && curThreadSize_ < threadSizeThreshold_) {
         auto ptr = std::make_unique<Thread>(std::bind(&ThreadPool::threadFuc, this, std::placeholders::_1));
-        std::cout << "Create new thread, id = " << ptr->getId() << "..." << std::endl;
+        std::cout << "---Create new thread, id = " << ptr->getId() << "---" << std::endl;
         int thread_id = ptr->getId();
         threads_.emplace(thread_id, std::move(ptr));
         threads_[thread_id]->start();
@@ -129,36 +133,47 @@ Result ThreadPool::submitTask(std::shared_ptr<Task> sp) {
 void ThreadPool::threadFuc(int thread_id) {
     auto lastTime = std::chrono::high_resolution_clock().now();
 
-    for (;;) {
+    while (isRunning_) {
         std::shared_ptr<Task> task;
         // 建立作用域限制线程获取锁的时间
         {
             // 获取锁
             std::unique_lock<std::mutex> lock(taskQueMutex_);
 
-            std::cout << "thread id: " << std::this_thread::get_id() << " try to acquire task..." << std::endl;
+            std::cout << "Thread id: " << std::this_thread::get_id() << " try to acquire task..." << std::endl;
 
             // Cached模式下，回收超过空闲时间的多余线程
-            if (poolMode_ == PoolMode::Mode_Cached) {
-                while (taskQue_.size() == 0) {
+            while (isRunning_ && taskQue_.size() == 0) {
+                if (poolMode_ == PoolMode::Mode_Cached) {
                     if (std::cv_status::timeout == notEmpty_.wait_for(lock, std::chrono::seconds(1))) {
                         auto nowTime = std::chrono::high_resolution_clock().now();
                         auto durTime = std::chrono::duration_cast<std::chrono::seconds>(nowTime - lastTime);
                         if (durTime.count() > THREAD_MAX_IDEL_TIME && curThreadSize_ > initThreadSize_) {
                             threads_.erase(thread_id);
-                            std::cout << "Thread id: " << std::this_thread::get_id() << "exit..." << std::endl; 
+                            std::cout << "---Thread exit, id: " << std::this_thread::get_id() << "---" << std::endl; 
                             curThreadSize_--;
                             idleThreadSize_--;
                             return ;
                         }
                     }
+                } else {
+                    // 等待notEmpty条件
+                    notEmpty_.wait(lock);
                 }
-            } else {
-                // 等待notEmpty条件
-                notEmpty_.wait(lock, [&]()->bool { return taskQue_.size() > 0; });
+
+                // if (!isRunning_) {
+                //     threads_.erase(thread_id);
+                //     exitCond_.notify_all();
+                //     std::cout << "Thread id: " << std::this_thread::get_id() << " exit..." << std::endl;
+                //     return ;
+                // }
             }
 
-            std::cout << "thread id: " << std::this_thread::get_id() << " acquire task successfully..." << std::endl;
+            if (!isRunning_) {
+                break;
+            }
+
+            std::cout << "Thread id: " << std::this_thread::get_id() << " acquire task successfully..." << std::endl;
             idleThreadSize_--;
 
             // 从任务队列中获取任务
@@ -181,6 +196,10 @@ void ThreadPool::threadFuc(int thread_id) {
         idleThreadSize_++;
         auto lastTime = std::chrono::high_resolution_clock().now();
     }
+
+    threads_.erase(thread_id);
+    exitCond_.notify_all();
+    std::cout << "Thread id: " << std::this_thread::get_id() << " exit..." << std::endl;
 }
 
 

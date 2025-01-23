@@ -6,6 +6,7 @@
 #include <memory>
 #include <atomic>
 #include <mutex>
+#include <thread>
 #include <condition_variable>
 #include <functional>
 #include <unordered_map>
@@ -184,7 +185,7 @@ public:
     ~ThreadPool();
 
     // 开启线程池
-    void start(size_t initThreadSize = 4); 
+    void start(size_t initThreadSize = std::thread::hardware_concurrency()); 
 
     // 设置线程池的工作模式
     void setMode(PoolMode mode);
@@ -218,6 +219,7 @@ private:
     std::mutex taskQueMutex_;  // 保证任务队列的线程安全
     std::condition_variable notFull_;
     std::condition_variable notEmpty_;
+    std::condition_variable exitCond_;  // 等带线程资源全部回收 
 
     void threadFuc(int thread_id);  // 线程执行函数
     bool checkState() const;  // 查询线程池运行状态
