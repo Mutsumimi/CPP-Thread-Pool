@@ -118,7 +118,7 @@ Result ThreadPool::submitTask(std::shared_ptr<Task> sp) {
     // Cached模式下，根据任务数量和空闲线程数量判断是否需要创建新线程
     if (poolMode_ == PoolMode::Mode_Cached && taskSize_ > idleThreadSize_ && curThreadSize_ < threadSizeThreshold_) {
         auto ptr = std::make_unique<Thread>(std::bind(&ThreadPool::threadFuc, this, std::placeholders::_1));
-        std::cout << "---Create new thread, id = " << ptr->getId() << "---" << std::endl;
+        std::cout << "---Create new thread---" << std::endl;
         int thread_id = ptr->getId();
         threads_.emplace(thread_id, std::move(ptr));
         threads_[thread_id]->start();
@@ -133,7 +133,7 @@ Result ThreadPool::submitTask(std::shared_ptr<Task> sp) {
 void ThreadPool::threadFuc(int thread_id) {
     auto lastTime = std::chrono::high_resolution_clock().now();
 
-    while (isRunning_) {
+    for (;;) {
         std::shared_ptr<Task> task;
         // 建立作用域限制线程获取锁的时间
         {
@@ -143,12 +143,19 @@ void ThreadPool::threadFuc(int thread_id) {
             std::cout << "Thread id: " << std::this_thread::get_id() << " try to acquire task..." << std::endl;
 
             // Cached模式下，回收超过空闲时间的多余线程
-            while (isRunning_ && taskQue_.size() == 0) {
+            while (taskQue_.size() == 0) {
+                if (!isRunning_) {
+                    threads_.erase(thread_id);
+                    std::cout << "Thread id: " << std::this_thread::get_id() << " exit..." << std::endl;
+                    exitCond_.notify_all();
+                    return ;
+                }
+
                 if (poolMode_ == PoolMode::Mode_Cached) {
                     if (std::cv_status::timeout == notEmpty_.wait_for(lock, std::chrono::seconds(1))) {
                         auto nowTime = std::chrono::high_resolution_clock().now();
                         auto durTime = std::chrono::duration_cast<std::chrono::seconds>(nowTime - lastTime);
-                        if (durTime.count() > THREAD_MAX_IDEL_TIME && curThreadSize_ > initThreadSize_) {
+                        if (durTime.count() >= THREAD_MAX_IDEL_TIME && curThreadSize_ > initThreadSize_) {
                             threads_.erase(thread_id);
                             std::cout << "---Thread exit, id: " << std::this_thread::get_id() << "---" << std::endl; 
                             curThreadSize_--;
@@ -167,10 +174,6 @@ void ThreadPool::threadFuc(int thread_id) {
                 //     std::cout << "Thread id: " << std::this_thread::get_id() << " exit..." << std::endl;
                 //     return ;
                 // }
-            }
-
-            if (!isRunning_) {
-                break;
             }
 
             std::cout << "Thread id: " << std::this_thread::get_id() << " acquire task successfully..." << std::endl;
@@ -194,12 +197,8 @@ void ThreadPool::threadFuc(int thread_id) {
         }
 
         idleThreadSize_++;
-        auto lastTime = std::chrono::high_resolution_clock().now();
+        lastTime = std::chrono::high_resolution_clock().now();
     }
-
-    threads_.erase(thread_id);
-    exitCond_.notify_all();
-    std::cout << "Thread id: " << std::this_thread::get_id() << " exit..." << std::endl;
 }
 
 
